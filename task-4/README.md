@@ -176,3 +176,30 @@ key        shmid      owner      perms      bytes      nattch     status
 ```
 
 Ещё можно заметить, что ключ не меняется (`ftok` работает детерминированно), а id инкрементится на каждом запуске, т. к. каждый раз просим ядро создать новый сегмент (`IPC_CREAT` — *Create a new segment.  If this flag is not used, then shmget() will find the segment associated with key and check to see if the user has permission to access the segment.* — https://www.man7.org/linux/man-pages/man2/shmget.2.html).
+
+
+## Задание 3. Анализ памяти процессов (VSZ vs RSS)
+
+```
+dmitry@dmitry:~$ python3 -c "print('Allocating memory...'); a = 'X' * (250 * 1024 * 1024); import time; print('Memory allocated. Sleeping...'); time.sleep(120);"&
+[1] 2890
+dmitry@dmitry:~$ Allocating memory...
+Memory allocated. Sleeping...
+```
+
+```
+dmitry@dmitry:~$ ps -o pid,user,%mem,rss,vsz,comm -p 2890
+    PID USER     %MEM   RSS    VSZ COMMAND
+   2890 dmitry    6.6 265472 273268 python3
+```
+
+Если убрать команду `a = ...`:
+```
+dmitry@dmitry:~$ ps -o pid,user,%mem,rss,vsz,comm -p 2918
+    PID USER     %MEM   RSS    VSZ COMMAND
+   2918 dmitry    0.2  9472  17260 python3
+```
+
+Запрашивали 256.000 КБ под строчку. По RSS ровно такая разница. Здесь реальная память заиспользовалась потому, что мы не только сказали: «Система, дай нам кусок памяти», а ещё и записали в него что-то. И стек, и куча, естественно, должны где-то храниться. Без создания строки RSS ненулевой, т. к. Питон тоже не бесплатный и что-то пишет.
+
+А то, что VSZ > RSS, — совершенно ожидаемое состояние, т. к. в виртуальной памяти держатся неинициализированные куски памяти, загруженные библиотеки и пр. 
