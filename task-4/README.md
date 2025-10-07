@@ -117,3 +117,62 @@ dmitry@host2:~$ systemd-analyze blame | head -n 5
 15.288s homework.service
 14.371s apport.service
 ```
+
+
+## Задание 2. Межпроцессное взаимодействие (IPC) с разделяемой памятью
+
+Скопипастил код и команды запуска из задания.
+
+```
+dmitry@dmitry:~$ ./shm_creator
+Shared memory segment created.
+ID: 1
+Key: 0x41000011
+Run 'ipcs -m' to see it. Process will exit in 60 seconds...
+```
+
+```
+dmitry@dmitry:~$ ipcs -m
+
+------ Shared Memory Segments --------
+key        shmid      owner      perms      bytes      nattch     status      
+0x41000011 1          dmitry     666        1024       0   
+```
+
+По истечении 60 с табличка, естественно, опустевает. С первыми 5 столбцами как будто всё ожидаемо. Столбец `nattch` показывает, сколько процессов подключено к сегменту. Мы же не подключаемся, а просто создаём и ждём. Инкремент этого значения происходит при вызове `shmat` (*Upon successful completion, shmat() shall increment the value of shm_nattch in the data structure associated with the shared memory ID of the attached shared memory segment* — https://man7.org/linux/man-pages/man3/shmat.3p.html), декремент — по `shmdt` (*Upon successful completion, shmdt() shall decrement the value of shm_nattch in the data structure associated with the shared memory ID of the attached shared memory segment* — https://man7.org/linux/man-pages/man3/shmdt.3p.html). При создании по `shmget` инициализируем нулём (*When a new shared memory segment is created, its contents are initialized to zero values, and its associated data structure, hmid_ds (see shmctl(2)), is initialized as follows: ... shm_lpid, shm_nattch, shm_atime, and shm_dtime are set to 0.*).
+
+Добавляю вызов shm_attach для теста:
+```
+...
+    printf("ID: %d\nKey: 0x%x\n", shmid, key);
+    sleep(15);
+    shmat(shmid, NULL, 0);
+    printf("Run 'ipcs -m' to see it. Process will exit in 60 seconds...\n");
+...
+```
+
+Ожидаемо получаю 1 спустя 15 с:
+```
+dmitry@dmitry:~$ ipcs -m
+
+------ Shared Memory Segments --------
+key        shmid      owner      perms      bytes      nattch     status      
+0x41000011 2          dmitry     666        1024       0                       
+
+dmitry@dmitry:~$ ipcs -m
+
+------ Shared Memory Segments --------
+key        shmid      owner      perms      bytes      nattch     status      
+0x41000011 2          dmitry     666        1024       1
+```
+
+Ещё есть колонка `status`. Мы никаких флагов при создании не ставили, поэтому она пустая. Если же, например, сотворить такое: `shmctl(shmid, SHM_LOCK, NULL);`, то получим:
+```
+dmitry@dmitry:~$ ipcs -m
+
+------ Shared Memory Segments --------
+key        shmid      owner      perms      bytes      nattch     status      
+0x41000011 3          dmitry     666        1024       1                 locked
+```
+
+Ещё можно заметить, что ключ не меняется (`ftok` работает детерминированно), а id инкрементится на каждом запуске, т. к. каждый раз просим ядро создать новый сегмент (`IPC_CREAT` — *Create a new segment.  If this flag is not used, then shmget() will find the segment associated with key and check to see if the user has permission to access the segment.* — https://www.man7.org/linux/man-pages/man2/shmget.2.html).
