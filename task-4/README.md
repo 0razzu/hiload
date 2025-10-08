@@ -203,3 +203,210 @@ dmitry@dmitry:~$ ps -o pid,user,%mem,rss,vsz,comm -p 2918
 Запрашивали 256.000 КБ под строчку. По RSS ровно такая разница. Здесь реальная память заиспользовалась потому, что мы не только сказали: «Система, дай нам кусок памяти», а ещё и записали в него что-то. И стек, и куча, естественно, должны где-то храниться. Без создания строки RSS ненулевой, т. к. Питон тоже не бесплатный и что-то пишет.
 
 А то, что VSZ > RSS, — совершенно ожидаемое состояние, т. к. в виртуальной памяти держатся неинициализированные куски памяти, загруженные библиотеки и пр. 
+
+
+## Задание 4. NUMA и cgroups
+
+Смотрим ноды, их ядра и память:
+```
+dmitry@dmitry:~$ numactl --hardware
+available: 1 nodes (0)
+node 0 cpus: 0 1 2 3
+node 0 size: 3900 MB
+node 0 free: 2794 MB
+node distances:
+node   0 
+  0:  10 
+```
+
+Т. е. одна NUMA-нода с 3900 МБ RAM.
+
+Сервис из задания убил oom-killer:
+```
+dmitry@dmitry:~$ systemd-cgls
+CGroup /:
+-.slice
+├─user.slice
+│ └─user-1000.slice
+│   ├─user@1000.service …
+│   │ └─init.scope
+│   │   ├─872 /usr/lib/systemd/systemd --user
+│   │   └─873 (sd-pam)
+│   ├─session-3.scope
+│   │ ├─ 844 /bin/login -p --
+│   │ └─1085 -bash
+│   ├─session-1.scope
+│   │ ├─845 sshd: dmitry [priv]
+│   │ ├─982 sshd: dmitry@pts/0
+│   │ └─983 -bash
+│   └─session-5.scope
+│     ├─1109 sshd: dmitry [priv]
+│     ├─1164 sshd: dmitry@pts/1
+│     ├─1165 -bash
+│     ├─1186 systemd-cgls
+│     └─1187 pager
+├─init.scope
+│ └─1 /sbin/init
+└─system.slice
+  ├─systemd-networkd.service
+  │ └─562 /usr/lib/systemd/systemd-networkd
+  ├─systemd-udevd.service …
+  │ └─udev
+  │   └─387 /usr/lib/systemd/systemd-udevd
+  ├─cron.service
+  │ └─833 /usr/sbin/cron -f -P
+  ├─polkit.service
+  │ └─690 /usr/lib/polkit-1/polkitd --no-debug
+  ├─multipathd.service
+  │ └─368 /sbin/multipathd -d -s
+  ├─ModemManager.service
+  │ └─757 /usr/sbin/ModemManager
+  ├─systemd-journald.service
+  │ └─314 /usr/lib/systemd/systemd-journald
+  ├─unattended-upgrades.service
+  │ └─737 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+  ├─ssh.service
+  │ └─841 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+  ├─rsyslog.service
+  │ └─740 /usr/sbin/rsyslogd -n -iNONE
+  ├─systemd-resolved.service
+  │ └─593 /usr/lib/systemd/systemd-resolved
+  ├─udisks2.service
+  │ └─700 /usr/libexec/udisks2/udisksd
+  ├─dbus.service
+  │ └─685 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+  ├─systemd-timesyncd.service
+  │ └─596 /usr/lib/systemd/systemd-timesyncd
+  └─systemd-logind.service
+    └─696 /usr/lib/systemd/systemd-logind
+dmitry@dmitry:~$ systemctl status highload-stress-test.service
+× highload-stress-test.service - /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s
+     Loaded: loaded (/run/systemd/transient/highload-stress-test.service; transient)
+  Transient: yes
+     Active: failed (Result: oom-kill) since Wed 2025-10-08 09:17:02 UTC; 26s ago
+   Duration: 45ms
+    Process: 1182 ExecStart=/usr/bin/stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s (code=exited, status=1/FAILURE)
+   Main PID: 1182 (code=exited, status=1/FAILURE)
+        CPU: 69ms
+
+Oct 08 09:17:02 dmitry systemd[1]: Started highload-stress-test.service - /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s.
+Oct 08 09:17:02 dmitry stress[1182]: stress: info: [1182] dispatching hogs: 1 cpu, 0 io, 1 vm, 0 hdd
+Oct 08 09:17:02 dmitry stress[1182]: stress: FAIL: [1182] (425) <-- worker 1184 got signal 9
+Oct 08 09:17:02 dmitry stress[1182]: stress: WARN: [1182] (427) now reaping child worker processes
+Oct 08 09:17:02 dmitry stress[1182]: stress: FAIL: [1182] (461) failed run completed in 0s
+Oct 08 09:17:02 dmitry systemd[1]: highload-stress-test.service: A process of this unit has been killed by the OOM killer.
+Oct 08 09:17:02 dmitry systemd[1]: highload-stress-test.service: Main process exited, code=exited, status=1/FAILURE
+Oct 08 09:17:02 dmitry systemd[1]: highload-stress-test.service: Failed with result 'oom-kill'.
+```
+
+На самом сервере такое сообщение (в терминале, через который я работаю по ssh, такого не было):
+![](4.png)
+
+Ровно 150 — то же самое, а вот со 100 МБ завелось:
+
+```
+dmitry@dmitry:~$ sudo systemd-run --unit=highload-stress-test3 --slice=testing3.slice --property="MemoryMax=150M" --property="CPUWeight=100" stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+Running as unit: highload-stress-test3.service; invocation ID: 24d6870b2b1040b79e3ffa0b985c9c86
+```
+
+```
+dmitry@dmitry:~$ systemd-cgls
+CGroup /:
+-.slice
+├─user.slice
+│ └─user-1000.slice
+│   ├─user@1000.service …
+│   │ └─init.scope
+│   │   ├─872 /usr/lib/systemd/systemd --user
+│   │   └─873 (sd-pam)
+│   ├─session-3.scope
+│   │ ├─ 844 /bin/login -p --
+│   │ └─1085 -bash
+│   ├─session-1.scope
+│   │ ├─845 sshd: dmitry [priv]
+│   │ ├─982 sshd: dmitry@pts/0
+│   │ └─983 -bash
+│   └─session-5.scope
+│     ├─1109 sshd: dmitry [priv]
+│     ├─1164 sshd: dmitry@pts/1
+│     ├─1165 -bash
+│     ├─1237 systemd-cgls
+│     └─1238 pager
+├─testing3.slice
+│ └─highload-stress-test3.service
+│   ├─1234 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+│   ├─1235 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+│   └─1236 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+├─init.scope
+│ └─1 /sbin/init
+└─system.slice
+  ├─systemd-networkd.service
+  │ └─562 /usr/lib/systemd/systemd-networkd
+  ├─systemd-udevd.service …
+  │ └─udev
+  │   └─387 /usr/lib/systemd/systemd-udevd
+  ├─cron.service
+  │ └─833 /usr/sbin/cron -f -P
+  ├─polkit.service
+  │ └─690 /usr/lib/polkit-1/polkitd --no-debug
+  ├─multipathd.service
+  │ └─368 /sbin/multipathd -d -s
+  ├─ModemManager.service
+  │ └─757 /usr/sbin/ModemManager
+  ├─systemd-journald.service
+  │ └─314 /usr/lib/systemd/systemd-journald
+  ├─unattended-upgrades.service
+  │ └─737 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+  ├─ssh.service
+  │ └─841 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+  ├─rsyslog.service
+  │ └─740 /usr/sbin/rsyslogd -n -iNONE
+  ├─systemd-resolved.service
+  │ └─593 /usr/lib/systemd/systemd-resolved
+  ├─udisks2.service
+  │ └─700 /usr/libexec/udisks2/udisksd
+  ├─dbus.service
+  │ └─685 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+  ├─systemd-timesyncd.service
+  │ └─596 /usr/lib/systemd/systemd-timesyncd
+  └─systemd-logind.service
+    └─696 /usr/lib/systemd/systemd-logind
+dmitry@dmitry:~$ systemctl status highload-stress-test3.service
+● highload-stress-test3.service - /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+     Loaded: loaded (/run/systemd/transient/highload-stress-test3.service; transient)
+  Transient: yes
+     Active: active (running) since Wed 2025-10-08 09:34:54 UTC; 25s ago
+   Main PID: 1234 (stress)
+      Tasks: 3 (limit: 4546)
+     Memory: 25.9M (max: 150.0M available: 123.5M peak: 101.1M)
+        CPU: 51.480s
+     CGroup: /testing3.slice/highload-stress-test3.service
+             ├─1234 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+             ├─1235 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+             └─1236 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+
+Oct 08 09:34:54 dmitry systemd[1]: Started highload-stress-test3.service - /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s.
+Oct 08 09:34:54 dmitry stress[1234]: stress: info: [1234] dispatching hogs: 1 cpu, 0 io, 1 vm, 0 hdd
+```
+
+Сначала зачем-то переименовывал слайс, но ничего не мешает нам поместить новый сервис в тот же срез, конечно:
+
+```
+dmitry@dmitry:~$ systemd-cgls
+CGroup /:
+-.slice
+├─user.slice
+...
+└─testing.slice
+  └─highload-stress-test3.service
+    ├─1349 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+    ├─1350 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+    └─1351 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 100M --timeout 30s
+
+```
+
+`MemoryMax`, как увидели, ограничивает количество памяти, которое может использовать сервис. Попытается привысить — его убьют. Сделано это, очевидно, для предотвращения чрезмерного потребления процессом, которое могло бы лишить доступа к памяти другие процессы.
+
+`CPUWeight` же ничего строго не ограничивает, а выставляет приоритет процессу. Более высокий означает большую вероятность доступа к ресурсам.
+
+Можно также ограничивать не один процесс, как мы сделали, а группами по слайсам. Например: `sudo systemctl set-property testing.slice MemoryMax=150M`.
