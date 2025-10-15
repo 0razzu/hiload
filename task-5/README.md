@@ -366,3 +366,118 @@ dmitry@host1:~$ ip a
 ```
 
 Перевожу цифры в цифры: `2 2 0 0 0 2 0 0 192 168 14 12 255 255 255 255 0 0 0 0 0 0 0 1 0 2 0 0 192 168 14 88 255 255 255 255 0 0 0 0 0 0 0 1` — и 192.168.14.12/32, и 192.168.14.88/32 на месте, и никто лишний не пробрался.
+
+
+## Задание 3. Настройка фаервола
+
+Смотрю, что сейчас понастроено:
+```
+dmitry@host1:~$ sudo iptables -L -n -v
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+dmitry@host1:~$ sudo nft list ruleset
+```
+
+Запускаю сервер:
+```
+dmitry@host1:~$ python3 -m http.server 8080
+Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...
+```
+
+Спокойно захожу, в т. ч. снаружи:
+```
+dmitry@host1:~$ curl localhost:8080
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Directory listing for /</title>
+</head>
+<body>
+<h1>Directory listing for /</h1>
+<hr>
+<ul>
+<li><a href=".bash_history">.bash_history</a></li>
+<li><a href=".bash_logout">.bash_logout</a></li>
+<li><a href=".bashrc">.bashrc</a></li>
+<li><a href=".cache/">.cache/</a></li>
+<li><a href=".lesshst">.lesshst</a></li>
+<li><a href=".profile">.profile</a></li>
+<li><a href=".ssh/">.ssh/</a></li>
+<li><a href=".sudo_as_admin_successful">.sudo_as_admin_successful</a></li>
+<li><a href="homework_key">homework_key</a></li>
+<li><a href="shm_creator">shm_creator</a></li>
+<li><a href="shm_creator.c">shm_creator.c</a></li>
+</ul>
+<hr>
+</body>
+</html>
+```
+
+```
+MacBook-Pro-dmitry:~ dmitrypatoka$ curl host1:8080
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Directory listing for /</title>
+</head>
+<body>
+<h1>Directory listing for /</h1>
+<hr>
+<ul>
+<li><a href=".bash_history">.bash_history</a></li>
+<li><a href=".bash_logout">.bash_logout</a></li>
+<li><a href=".bashrc">.bashrc</a></li>
+<li><a href=".cache/">.cache/</a></li>
+<li><a href=".lesshst">.lesshst</a></li>
+<li><a href=".profile">.profile</a></li>
+<li><a href=".ssh/">.ssh/</a></li>
+<li><a href=".sudo_as_admin_successful">.sudo_as_admin_successful</a></li>
+<li><a href="homework_key">homework_key</a></li>
+<li><a href="shm_creator">shm_creator</a></li>
+<li><a href="shm_creator.c">shm_creator.c</a></li>
+</ul>
+<hr>
+</body>
+</html>
+```
+
+Логи пишутся:
+```
+Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...
+127.0.0.1 - - [15/Oct/2025 20:08:32] "GET / HTTP/1.1" 200 -
+192.168.57.1 - - [15/Oct/2025 20:09:51] "GET / HTTP/1.1" 200 -
+```
+
+Затыкаю, проверяю:
+```
+dmitry@host1:~$ sudo iptables -A INPUT -p tcp --dport 8080 -j REJECT
+dmitry@host1:~$ sudo iptables -L -n -v
+Chain INPUT (policy ACCEPT 385 packets, 26972 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 REJECT     6    --  *      *       0.0.0.0/0            0.0.0.0/0            tcp dpt:8080 reject-with icmp-port-unreachable
+
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination  
+```
+
+Стучусь:
+```
+dmitry@host1:~$ curl localhost:8080
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Couldn't connect to server
+```
+
+```
+MacBook-Pro-dmitry:~ dmitrypatoka$ curl host1:8080
+curl: (7) Failed to connect to host1 port 8080 after 3 ms: Couldn't connect to server
+```
