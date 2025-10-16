@@ -471,7 +471,7 @@ Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
  pkts bytes target     prot opt in     out     source               destination  
 ```
 
-Стучусь:
+Стучусь — не открывают:
 ```
 dmitry@host1:~$ curl localhost:8080
 curl: (7) Failed to connect to localhost port 8080 after 0 ms: Couldn't connect to server
@@ -481,3 +481,93 @@ curl: (7) Failed to connect to localhost port 8080 after 0 ms: Couldn't connect 
 MacBook-Pro-dmitry:~ dmitrypatoka$ curl host1:8080
 curl: (7) Failed to connect to host1 port 8080 after 3 ms: Couldn't connect to server
 ```
+
+
+## Задание 4. Аппаратное ускорение сетевого трафика (offloading)
+
+Смотрю offload features по интерфейсу для выхода в сеть:
+```
+dmitry@host1:~$ ethtool -k enp0s8
+Features for enp0s8:
+rx-checksumming: off
+tx-checksumming: on
+    tx-checksum-ipv4: off [fixed]
+    tx-checksum-ip-generic: on
+    tx-checksum-ipv6: off [fixed]
+    tx-checksum-fcoe-crc: off [fixed]
+    tx-checksum-sctp: off [fixed]
+scatter-gather: on
+    tx-scatter-gather: on
+    tx-scatter-gather-fraglist: off [fixed]
+tcp-segmentation-offload: on
+    tx-tcp-segmentation: on
+    tx-tcp-ecn-segmentation: off [fixed]
+    tx-tcp-mangleid-segmentation: off
+    tx-tcp6-segmentation: off [fixed]
+generic-segmentation-offload: on
+generic-receive-offload: on
+large-receive-offload: off [fixed]
+rx-vlan-offload: on
+tx-vlan-offload: on [fixed]
+ntuple-filters: off [fixed]
+receive-hashing: off [fixed]
+highdma: off [fixed]
+rx-vlan-filter: on [fixed]
+vlan-challenged: off [fixed]
+tx-lockless: off [fixed]
+netns-local: off [fixed]
+tx-gso-robust: off [fixed]
+tx-fcoe-segmentation: off [fixed]
+tx-gre-segmentation: off [fixed]
+tx-gre-csum-segmentation: off [fixed]
+tx-ipxip4-segmentation: off [fixed]
+tx-ipxip6-segmentation: off [fixed]
+tx-udp_tnl-segmentation: off [fixed]
+tx-udp_tnl-csum-segmentation: off [fixed]
+tx-gso-partial: off [fixed]
+tx-tunnel-remcsum-segmentation: off [fixed]
+tx-sctp-segmentation: off [fixed]
+tx-esp-segmentation: off [fixed]
+tx-udp-segmentation: off [fixed]
+tx-gso-list: off [fixed]
+fcoe-mtu: off [fixed]
+tx-nocache-copy: off
+loopback: off [fixed]
+rx-fcs: off
+rx-all: off
+tx-vlan-stag-hw-insert: off [fixed]
+rx-vlan-stag-hw-parse: off [fixed]
+rx-vlan-stag-filter: off [fixed]
+l2-fwd-offload: off [fixed]
+hw-tc-offload: off [fixed]
+esp-hw-offload: off [fixed]
+esp-tx-csum-hw-offload: off [fixed]
+rx-udp_tunnel-port-offload: off [fixed]
+tls-hw-tx-offload: off [fixed]
+tls-hw-rx-offload: off [fixed]
+rx-gro-hw: off [fixed]
+tls-hw-record: off [fixed]
+rx-gro-list: off
+macsec-hw-offload: off [fixed]
+rx-udp-gro-forwarding: off
+hsr-tag-ins-offload: off [fixed]
+hsr-tag-rm-offload: off [fixed]
+hsr-fwd-offload: off [fixed]
+hsr-dup-offload: off [fixed]
+```
+
+Вот интересующий нас блок:
+```
+tcp-segmentation-offload: on
+    tx-tcp-segmentation: on
+    tx-tcp-ecn-segmentation: off [fixed]
+    tx-tcp-mangleid-segmentation: off
+    tx-tcp6-segmentation: off [fixed]
+```
+TCP Segmentation Offload включён. По подпараметрам:
+- передача TCP-сегментов ускоряется аппаратно,
+- Explicit Congestion Notification отключено и нельзя включить,
+- сегментация с манглингом полей id отключена (т. е. при разбиении на сегменты карта оставляет значение, установленное ОС),
+- для IP v6 сегментацию нельзя ускорить.
+
+Что вообще даёт TCP Segmentation Offload? С ним сетевая карта сама разбивает большие TCP-пакеты на части поменьше, снижая нагрузку на процессор. С точки зрения процессора всё работает за одно прерывание: выгрузили огромный пакет на карту — дальше она разбирается сама. Иначе именно процессору приходится бить пакет и выставлять каждому фрагменту заголовки, и прерываться в этом случае придётся на отправку каждого сегмента.
