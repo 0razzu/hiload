@@ -482,6 +482,8 @@ MacBook-Pro-dmitry:~ dmitrypatoka$ curl host1:8080
 curl: (7) Failed to connect to host1 port 8080 after 3 ms: Couldn't connect to server
 ```
 
+В логах сервера, естественно, тихо.
+
 
 ## Задание 4. Аппаратное ускорение сетевого трафика (offloading)
 
