@@ -343,3 +343,115 @@ tmpfs                              390M   12K  390M   1% /run/user/1000
 /dev/mapper/vg_highload-data_lv    1.2G   24K  1.1G   1% /mnt/app_data
 /dev/mapper/vg_highload-logs_lv    780M   48M  733M   7% /mnt/app_logs
 ```
+
+
+## Задание 4. Использование pseudo filesystem
+
+Читаю каталог `/proc`, нахожу нужные файлики, читаю:
+```
+dmitry@host1:~$ cat /proc/cpuinfo
+processor    : 0
+BogoMIPS    : 48.00
+Features    : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint bf16 afp
+CPU implementer    : 0x61
+CPU architecture: 8
+CPU variant    : 0x0
+CPU part    : 0x000
+CPU revision    : 0
+
+processor    : 1
+BogoMIPS    : 48.00
+Features    : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint bf16 afp
+CPU implementer    : 0x61
+CPU architecture: 8
+CPU variant    : 0x0
+CPU part    : 0x000
+CPU revision    : 0
+
+processor    : 2
+BogoMIPS    : 48.00
+Features    : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint bf16 afp
+CPU implementer    : 0x61
+CPU architecture: 8
+CPU variant    : 0x0
+CPU part    : 0x000
+CPU revision    : 0
+
+processor    : 3
+BogoMIPS    : 48.00
+Features    : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint bf16 afp
+CPU implementer    : 0x61
+CPU architecture: 8
+CPU variant    : 0x0
+CPU part    : 0x000
+CPU revision    : 0
+
+```
+
+Похоже, что у меня модель CPU — большой секрет. С памятью приятнее:
+```
+dmitry@host1:~$ cat /proc/meminfo
+MemTotal:        3993632 kB
+...
+```
+
+Чуть более настоичиво с процессором (всё равно точную модель не отдаёт):
+```
+dmitry@host1:~$ lscpu
+Architecture:             aarch64
+  CPU op-mode(s):         64-bit
+  Byte Order:             Little Endian
+CPU(s):                   4
+  On-line CPU(s) list:    0-3
+Vendor ID:                Apple
+  Model name:             -
+    Model:                0
+    Thread(s) per core:   1
+    Core(s) per cluster:  4
+    Socket(s):            -
+    Cluster(s):           1
+    Stepping:             0x0
+    BogoMIPS:             48.00
+    Flags:                fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint 
+                          bf16 afp
+NUMA:                     
+  NUMA node(s):           1
+  NUMA node0 CPU(s):      0-3
+Vulnerabilities:          
+  Gather data sampling:   Not affected
+  Itlb multihit:          Not affected
+  L1tf:                   Not affected
+  Mds:                    Not affected
+  Meltdown:               Not affected
+  Mmio stale data:        Not affected
+  Reg file data sampling: Not affected
+  Retbleed:               Not affected
+  Spec rstack overflow:   Not affected
+  Spec store bypass:      Vulnerable
+  Spectre v1:             Mitigation; __user pointer sanitization
+  Spectre v2:             Not affected
+  Srbds:                  Not affected
+  Tsx async abort:        Not affected
+```
+
+Ppid текущего shell:
+```
+dmitry@host1:~$ cat /proc/$$/status | grep PPid
+PPid:    1064
+```
+
+`$$` — переменная shell, содержащая его pid.
+
+Настройки I/O Scheduler для `/dev/sda`:
+```
+dmitry@host1:~$ cat /sys/block/sda/queue/scheduler
+[none] mq-deadline
+```
+
+Текущий планировщик оборачивается в скобки, т. е. у меня отключён. Доступен `mq-deadline`.
+
+Определяю размер MTU для `enp0s8`:
+```
+dmitry@host1:~$ cat /sys/class/net/enp0s8/mtu
+1500
+```
