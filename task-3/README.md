@@ -188,3 +188,158 @@ close(2)                                = 0
 Читали мы файлик с информацией о релизе ОС. В него записаны в key–value-формате такие характеристики как название дистрибутива, версия, сходство с другими дистрибутивами и ссылки на страницы, связанные с дистрибутивом. Нужен, чтобы программы знали, на чём запускаются.
 
 Записывающий вызов всё-таки присутствует в выводе. Вылез он потому, что `cat` реально пишет в stdout, и лишь потом shell перенаправляет в `/dev/null` — `cat` про перенаправления не думает и пишет, куда пишет по дефолту; специальной предобработки, чтобы соптимизировать наш особый случай, нет (да и как будто не unix way).
+
+
+## Задание 3. LVM Management
+
+Глянем сначала, что сейчас по дискам у нас:
+```
+dmitry@host1:~$ lsblk
+NAME                      MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+sda                         8:0    0   20G  0 disk 
+├─sda1                      8:1    0  953M  0 part /boot/efi
+├─sda2                      8:2    0  1.8G  0 part /boot
+└─sda3                      8:3    0 17.3G  0 part 
+  └─ubuntu--vg-ubuntu--lv 252:0    0   10G  0 lvm  /
+sr0                        11:0    1 1024M  0 rom
+```
+
+Добавляю, смотрю ещё раз:
+```
+dmitry@host1:~$ lsblk
+NAME                      MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+sda                         8:0    0   20G  0 disk 
+├─sda1                      8:1    0  953M  0 part /boot/efi
+├─sda2                      8:2    0  1.8G  0 part /boot
+└─sda3                      8:3    0 17.3G  0 part 
+  └─ubuntu--vg-ubuntu--lv 252:0    0   10G  0 lvm  /
+sdb                         8:16   0    2G  0 disk 
+sr0                        11:0    1 1024M  0 rom
+```
+
+Создаю раздел и проверяю:
+```
+dmitry@host1:~$ sudo fdisk /dev/sdb
+[sudo] password for dmitry: 
+
+Welcome to fdisk (util-linux 2.39.3).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+Device does not contain a recognized partition table.
+Created a new DOS (MBR) disklabel with disk identifier 0x67f53cdf.
+
+Command (m for help): n
+Partition type
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended (container for logical partitions)
+Select (default p): p
+Partition number (1-4, default 1): 
+First sector (2048-4194303, default 2048): 
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (2048-4194303, default 4194303): 
+
+Created a new partition 1 of type 'Linux' and of size 2 GiB.
+
+Command (m for help): w
+The partition table has been altered.
+Calling ioctl() to re-read partition table.
+Syncing disks.
+
+dmitry@host1:~$ lsblk
+NAME                      MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+sda                         8:0    0   20G  0 disk 
+├─sda1                      8:1    0  953M  0 part /boot/efi
+├─sda2                      8:2    0  1.8G  0 part /boot
+└─sda3                      8:3    0 17.3G  0 part 
+  └─ubuntu--vg-ubuntu--lv 252:0    0   10G  0 lvm  /
+sdb                         8:16   0    2G  0 disk 
+└─sdb1                      8:17   0    2G  0 part 
+sr0                        11:0    1 1024M  0 rom
+```
+
+Теперь Physical Volume:
+```
+dmitry@host1:~$ sudo pvcreate /dev/sdb1
+  Physical volume "/dev/sdb1" successfully created.
+dmitry@host1:~$ sudo pvs
+  PV         VG        Fmt  Attr PSize   PFree 
+  /dev/sda3  ubuntu-vg lvm2 a--  <17.32g <7.32g
+  /dev/sdb1            lvm2 ---   <2.00g <2.00g
+```
+
+И Volume Group:
+```
+dmitry@host1:~$ sudo vgcreate vg_highload /dev/sdb1
+  Volume group "vg_highload" successfully created
+dmitry@host1:~$ sudo vgs
+  VG          #PV #LV #SN Attr   VSize   VFree 
+  ubuntu-vg     1   1   0 wz--n- <17.32g <7.32g
+  vg_highload   1   0   0 wz--n-  <2.00g <2.00g
+```
+
+Logical Volumes:
+```
+dmitry@host1:~$ sudo lvcreate -L 1200M -n data_lv vg_highload
+  Logical volume "data_lv" created.
+dmitry@host1:~$ sudo lvcreate -l 100%FREE -n logs_lv vg_highload
+  Logical volume "logs_lv" created.
+dmitry@host1:~$ sudo lvs
+  LV        VG          Attr       LSize   Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  ubuntu-lv ubuntu-vg   -wi-ao----  10.00g                                                    
+  data_lv   vg_highload -wi-a-----   1.17g                                                    
+  logs_lv   vg_highload -wi-a----- 844.00m
+```
+
+Форматирую и монтирую:
+```
+dmitry@host1:~$ sudo mkfs.ext4 /dev/vg_highload/data_lv
+mke2fs 1.47.0 (5-Feb-2023)
+Creating filesystem with 307200 4k blocks and 76800 inodes
+Filesystem UUID: 86da08c5-9eac-4a56-86ae-ebdc88364b48
+Superblock backups stored on blocks: 
+    32768, 98304, 163840, 229376, 294912
+
+Allocating group tables: done                            
+Writing inode tables: done                            
+Creating journal (8192 blocks): done
+Writing superblocks and filesystem accounting information: done 
+
+dmitry@host1:~$ sudo mkdir -p /mnt/app_data
+dmitry@host1:~$ sudo mount /dev/vg_highload/data_lv /mnt/app_data
+dmitry@host1:~$ df -h
+Filesystem                         Size  Used Avail Use% Mounted on
+tmpfs                              391M  1.0M  390M   1% /run
+efivarfs                           256K   89K  168K  35% /sys/firmware/efi/efivars
+/dev/mapper/ubuntu--vg-ubuntu--lv  9.8G  4.1G  5.2G  45% /
+tmpfs                              2.0G     0  2.0G   0% /dev/shm
+tmpfs                              5.0M     0  5.0M   0% /run/lock
+/dev/sda2                          1.7G  102M  1.5G   7% /boot
+/dev/sda1                          952M  6.4M  945M   1% /boot/efi
+tmpfs                              390M   12K  390M   1% /run/user/1000
+/dev/mapper/vg_highload-data_lv    1.2G   24K  1.1G   1% /mnt/app_data
+dmitry@host1:~$ sudo mkfs.xfs /dev/vg_highload/logs_lv
+meta-data=/dev/vg_highload/logs_lv isize=512    agcount=4, agsize=54016 blks
+         =                       sectsz=512   attr=2, projid32bit=1
+         =                       crc=1        finobt=1, sparse=1, rmapbt=1
+         =                       reflink=1    bigtime=1 inobtcount=1 nrext64=0
+data     =                       bsize=4096   blocks=216064, imaxpct=25
+         =                       sunit=0      swidth=0 blks
+naming   =version 2              bsize=4096   ascii-ci=0, ftype=1
+log      =internal log           bsize=4096   blocks=16384, version=2
+         =                       sectsz=512   sunit=0 blks, lazy-count=1
+realtime =none                   extsz=4096   blocks=0, rtextents=0
+dmitry@host1:~$ sudo mkdir -p /mnt/app_logs
+dmitry@host1:~$ sudo mount /dev/vg_highload/logs_lv /mnt/app_logs
+dmitry@host1:~$ df -h
+Filesystem                         Size  Used Avail Use% Mounted on
+tmpfs                              391M  1.0M  390M   1% /run
+efivarfs                           256K   89K  168K  35% /sys/firmware/efi/efivars
+/dev/mapper/ubuntu--vg-ubuntu--lv  9.8G  4.1G  5.2G  45% /
+tmpfs                              2.0G     0  2.0G   0% /dev/shm
+tmpfs                              5.0M     0  5.0M   0% /run/lock
+/dev/sda2                          1.7G  102M  1.5G   7% /boot
+/dev/sda1                          952M  6.4M  945M   1% /boot/efi
+tmpfs                              390M   12K  390M   1% /run/user/1000
+/dev/mapper/vg_highload-data_lv    1.2G   24K  1.1G   1% /mnt/app_data
+/dev/mapper/vg_highload-logs_lv    780M   48M  733M   7% /mnt/app_logs
+```
