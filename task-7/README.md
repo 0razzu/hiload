@@ -270,3 +270,302 @@ TCP  192.168.100.1:80 rr
   -> 127.0.0.1:8081               Masq    1      0          51        
   -> 127.0.0.1:8082               Masq    1      0          51
 ```
+
+
+## Задание 4. Балансировка L7 с помощью NGINX
+
+Создаю файлик `/etc/nginx/conf.d/hiload.conf` со следующим содержимым:
+```
+upstream backend {
+    server 127.0.0.1:8081 max_fails=7 fail_timeout=10s;
+    server 127.0.0.1:8082 backup;
+}
+
+server {
+    listen 127.0.0.1:8888;
+
+    location / {
+        proxy_pass http://backend;
+        proxy_set_header X-high-load-test 123;
+        proxy_connect_timeout 1s;
+        proxy_send_timeout 1s;
+        proxy_read_timeout 1s;
+        send_timeout 1s;
+    }
+}
+```
+
+Проверяю, рестарчу:
+```
+dmitry@host1:~$ sudo nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+dmitry@host1:~$ sudo systemctl restart nginx
+dmitry@host1:~$ systemctl status nginx
+● nginx.service - A high performance web server and a reverse proxy server
+     Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; preset: enabled)
+     Active: active (running) since Tue 2025-10-28 19:55:55 UTC; 11s ago
+       Docs: man:nginx(8)
+    Process: 13723 ExecStartPre=/usr/sbin/nginx -t -q -g daemon on; master_process on; (code=exited, status=0/SUCCESS)
+    Process: 13725 ExecStart=/usr/sbin/nginx -g daemon on; master_process on; (code=exited, status=0/SUCCESS)
+   Main PID: 13727 (nginx)
+      Tasks: 5 (limit: 4544)
+     Memory: 3.6M (peak: 4.1M)
+        CPU: 11ms
+     CGroup: /system.slice/nginx.service
+             ├─13727 "nginx: master process /usr/sbin/nginx -g daemon on; master_process on;"
+             ├─13728 "nginx: worker process"
+             ├─13729 "nginx: worker process"
+             ├─13730 "nginx: worker process"
+             └─13731 "nginx: worker process"
+
+Oct 28 19:55:55 host1 systemd[1]: Starting nginx.service - A high performance web server and a reverse proxy server...
+Oct 28 19:55:55 host1 systemd[1]: Started nginx.service - A high performance web server and a reverse proxy server.
+```
+
+Стучусь в `:8888`:
+```
+dmitry@host1:~$ curl -v http://127.0.0.1:8888
+*   Trying 127.0.0.1:8888...
+* Connected to 127.0.0.1 (127.0.0.1) port 8888
+> GET / HTTP/1.1
+> Host: 127.0.0.1:8888
+> User-Agent: curl/8.5.0
+> Accept: */*
+> 
+< HTTP/1.1 200 OK
+< Server: nginx/1.24.0 (Ubuntu)
+< Date: Tue, 28 Oct 2025 19:58:01 GMT
+< Content-Type: text/html
+< Content-Length: 40
+< Connection: keep-alive
+< Last-Modified: Mon, 27 Oct 2025 17:01:57 GMT
+< 
+<h1>Response from Backend Server 1</h1>
+* Connection #0 to host 127.0.0.1 left intact
+```
+
+И с tshark:
+```
+dmitry@host1:~$ sudo tshark -i lo -f "tcp port 8888 or tcp port 8081 or tcp port 8082" -Y "http" -E header=y -T fields -e frame.number -e tcp.srcport -e tcp.dstport -e http.request.method -e http.host -e http.request.uri -e http.user_agent -e http.response.code -e http.response.phrase
+Running as user "root" and group "root". This could be dangerous.
+frame.number    tcp.srcport    tcp.dstport    http.request.method    http.host    http.request.uri    http.user_agent    http.response.code    http.response.phrase
+Capturing on 'Loopback: lo'
+4    42092    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+9    57044    8081    GET    backend    /    curl/8.5.0        
+13    8081    57044                    200    OK
+18    8888    42092                    200    OK
+```
+
+Вывода кастомных хэдеров в таком формате от tshark фиг добьёшься, поэтому посмотрим вообще всё (большую часть простыни вырезал):
+```
+dmitry@host1:~$ sudo tshark -i lo -f "tcp port 8888 or tcp port 8081 or tcp port 8082" -Y "http" -V
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'Loopback: lo'
+Frame 4: 143 bytes on wire (1144 bits), 143 bytes captured (1144 bits) on interface lo, id 0
+...
+    [Protocols in frame: eth:ethertype:ip:tcp:http]
+Ethernet II, Src: 00:00:00_00:00:00 (00:00:00:00:00:00), Dst: 00:00:00_00:00:00 (00:00:00:00:00:00)
+...
+Internet Protocol Version 4, Src: 127.0.0.1, Dst: 127.0.0.1
+...
+Transmission Control Protocol, Src Port: 55710, Dst Port: 8888, Seq: 1, Ack: 1, Len: 77
+...
+Hypertext Transfer Protocol
+    GET / HTTP/1.1\r\n
+        [Expert Info (Chat/Sequence): GET / HTTP/1.1\r\n]
+            [GET / HTTP/1.1\r\n]
+            [Severity level: Chat]
+            [Group: Sequence]
+        Request Method: GET
+        Request URI: /
+        Request Version: HTTP/1.1
+    Host: 127.0.0.1:8888\r\n
+    User-Agent: curl/8.5.0\r\n
+    Accept: */*\r\n
+    \r\n
+    [Full request URI: http://127.0.0.1:8888/]
+    [HTTP request 1/1]
+
+Frame 9: 178 bytes on wire (1424 bits), 178 bytes captured (1424 bits) on interface lo, id 0
+...
+    [Protocols in frame: eth:ethertype:ip:tcp:http]
+Ethernet II, Src: 00:00:00_00:00:00 (00:00:00:00:00:00), Dst: 00:00:00_00:00:00 (00:00:00:00:00:00)
+...
+Internet Protocol Version 4, Src: 127.0.0.1, Dst: 127.0.0.1
+...
+Transmission Control Protocol, Src Port: 55396, Dst Port: 8081, Seq: 1, Ack: 1, Len: 112
+...
+Hypertext Transfer Protocol
+    GET / HTTP/1.0\r\n
+        [Expert Info (Chat/Sequence): GET / HTTP/1.0\r\n]
+            [GET / HTTP/1.0\r\n]
+            [Severity level: Chat]
+            [Group: Sequence]
+        Request Method: GET
+        Request URI: /
+        Request Version: HTTP/1.0
+    X-high-load-test: 123\r\n
+    Host: backend\r\n
+    Connection: close\r\n
+    User-Agent: curl/8.5.0\r\n
+    Accept: */*\r\n
+    \r\n
+    [Full request URI: http://backend/]
+    [HTTP request 1/1]
+
+Frame 13: 106 bytes on wire (848 bits), 106 bytes captured (848 bits) on interface lo, id 0
+...
+    [Protocols in frame: eth:ethertype:ip:tcp:http:data-text-lines]
+Ethernet II, Src: 00:00:00_00:00:00 (00:00:00:00:00:00), Dst: 00:00:00_00:00:00 (00:00:00:00:00:00)
+...
+Internet Protocol Version 4, Src: 127.0.0.1, Dst: 127.0.0.1
+...
+Transmission Control Protocol, Src Port: 8081, Dst Port: 55396, Seq: 186, Ack: 113, Len: 40
+...
+[2 Reassembled TCP Segments (225 bytes): #11(185), #13(40)]
+    [Frame: 11, payload: 0-184 (185 bytes)]
+    [Frame: 13, payload: 185-224 (40 bytes)]
+...
+Hypertext Transfer Protocol
+    HTTP/1.0 200 OK\r\n
+        [Expert Info (Chat/Sequence): HTTP/1.0 200 OK\r\n]
+            [HTTP/1.0 200 OK\r\n]
+            [Severity level: Chat]
+            [Group: Sequence]
+        Response Version: HTTP/1.0
+        Status Code: 200
+        [Status Code Description: OK]
+        Response Phrase: OK
+    Server: SimpleHTTP/0.6 Python/3.12.3\r\n
+    Date: Tue, 28 Oct 2025 21:08:44 GMT\r\n
+    Content-type: text/html\r\n
+    Content-Length: 40\r\n
+        [Content length: 40]
+    Last-Modified: Mon, 27 Oct 2025 17:01:57 GMT\r\n
+    \r\n
+    [HTTP response 1/1]
+    [Time since request: 0.003965714 seconds]
+    [Request in frame: 9]
+    [Request URI: http://backend/]
+    File Data: 40 bytes
+Line-based text data: text/html (1 lines)
+    <h1>Response from Backend Server 1</h1>\n
+
+Frame 19: 308 bytes on wire (2464 bits), 308 bytes captured (2464 bits) on interface lo, id 0
+...
+    [Protocols in frame: eth:ethertype:ip:tcp:http:data-text-lines]
+Ethernet II, Src: 00:00:00_00:00:00 (00:00:00:00:00:00), Dst: 00:00:00_00:00:00 (00:00:00:00:00:00)
+...
+Internet Protocol Version 4, Src: 127.0.0.1, Dst: 127.0.0.1
+...
+Transmission Control Protocol, Src Port: 8888, Dst Port: 55710, Seq: 1, Ack: 78, Len: 242
+...
+Hypertext Transfer Protocol
+    HTTP/1.1 200 OK\r\n
+        [Expert Info (Chat/Sequence): HTTP/1.1 200 OK\r\n]
+            [HTTP/1.1 200 OK\r\n]
+            [Severity level: Chat]
+            [Group: Sequence]
+        Response Version: HTTP/1.1
+        Status Code: 200
+        [Status Code Description: OK]
+        Response Phrase: OK
+    Server: nginx/1.24.0 (Ubuntu)\r\n
+    Date: Tue, 28 Oct 2025 21:08:44 GMT\r\n
+    Content-Type: text/html\r\n
+    Content-Length: 40\r\n
+        [Content length: 40]
+    Connection: keep-alive\r\n
+    Last-Modified: Mon, 27 Oct 2025 17:01:57 GMT\r\n
+    \r\n
+    [HTTP response 1/1]
+    [Time since request: 0.004884049 seconds]
+    [Request in frame: 4]
+    [Request URI: http://127.0.0.1:8888/]
+    File Data: 40 bytes
+Line-based text data: text/html (1 lines)
+    <h1>Response from Backend Server 1</h1>\n
+```
+
+В фрейме 9 хэдер стоит.
+
+Теперь заменяю сервер на `127.0.0.1:8081` на такой тормозной:
+```
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class SlowHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        time.sleep(1000)
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"<h1>Response from Backend Server 1</h1>")
+
+def run(server_class=HTTPServer, handler_class=SlowHandler):
+    server_address = ("127.0.0.1", 8081)
+    httpd = server_class(server_address, handler_class)
+    print("Starting slow server...")
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    run()
+```
+
+И стучусь 10 раз:
+```
+dmitry@host1:~$ sudo tshark -i lo -f "tcp port 8888 or tcp port 8081 or tcp port 8082" -Y "http" -E header=y -T fields -e frame.number -e tcp.srcport -e tcp.dstport -e http.request.method -e http.host -e http.request.uri -e http.user_agent -e http.response.code -e http.response.phrase
+Running as user "root" and group "root". This could be dangerous.
+frame.number    tcp.srcport    tcp.dstport    http.request.method    http.host    http.request.uri    http.user_agent    http.response.code    http.response.phrase
+Capturing on 'Loopback: lo'
+12    58014    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+17    59254    8081    GET    backend    /    curl/8.5.0        
+23    40704    8082    GET    backend    /    curl/8.5.0        
+27    8082    40704                    200    OK
+32    8888    58014                    200    OK
+40    58026    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+45    59264    8081    GET    backend    /    curl/8.5.0        
+52    40706    8082    GET    backend    /    curl/8.5.0        
+56    8082    40706                    200    OK
+61    8888    58026                    200    OK
+69    58032    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+74    59280    8081    GET    backend    /    curl/8.5.0        
+81    40716    8082    GET    backend    /    curl/8.5.0        
+85    8082    40716                    200    OK
+90    8888    58032                    200    OK
+98    58040    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+103    59282    8081    GET    backend    /    curl/8.5.0        
+110    40732    8082    GET    backend    /    curl/8.5.0        
+114    8082    40732                    200    OK
+119    8888    58040                    200    OK
+127    58056    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+132    59290    8081    GET    backend    /    curl/8.5.0        
+139    47500    8082    GET    backend    /    curl/8.5.0        
+143    8082    47500                    200    OK
+148    8888    58056                    200    OK
+156    35342    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+161    33678    8081    GET    backend    /    curl/8.5.0        
+168    47510    8082    GET    backend    /    curl/8.5.0        
+172    8082    47510                    200    OK
+177    8888    35342                    200    OK
+185    35348    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+190    33682    8081    GET    backend    /    curl/8.5.0        
+197    47522    8082    GET    backend    /    curl/8.5.0        
+201    8082    47522                    200    OK
+207    8888    35348                    200    OK
+215    35358    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+222    47530    8082    GET    backend    /    curl/8.5.0        
+226    8082    47530                    200    OK
+231    8888    35358                    200    OK
+239    35364    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+245    47544    8082    GET    backend    /    curl/8.5.0        
+249    8082    47544                    200    OK
+254    8888    35364                    200    OK
+262    35372    8888    GET    127.0.0.1:8888    /    curl/8.5.0        
+268    47552    8082    GET    backend    /    curl/8.5.0        
+272    8082    47552                    200    OK
+277    8888    35372                    200    OK
+```
+
+Начиная с 8 раза nginx не пытается ходить в первый сервер.
