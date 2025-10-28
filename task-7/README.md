@@ -185,3 +185,88 @@ dmitry@host1:~$ curl -v my-awesome-highload-app.local:8082
 * Closing connection
 curl: (7) Failed to connect to my-awesome-highload-app.local port 8082 after 2 ms: Couldn't connect to server
 ```
+
+
+## Задание 3. Балансировка Layer 4 с  с помощью IPVS
+
+Создаю `dummy1`:
+```
+dmitry@host1:~$ sudo ip link add dummy1 type dummy
+dmitry@host1:~$ sudo ip a add 192.168.100.1/32 dev dummy1
+dmitry@host1:~$ sudo ip link set dummy1 up
+dmitry@host1:~$ ip a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host noprefixroute 
+       valid_lft forever preferred_lft forever
+2: enp0s8: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether 08:00:27:9e:c1:e4 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.31.161/24 metric 100 brd 192.168.31.255 scope global dynamic enp0s8
+       valid_lft 42843sec preferred_lft 42843sec
+    inet6 fe80::a00:27ff:fe9e:c1e4/64 scope link 
+       valid_lft forever preferred_lft forever
+3: enp0s9: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether 08:00:27:d3:b3:e5 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.57.2/24 brd 192.168.57.255 scope global enp0s9
+       valid_lft forever preferred_lft forever
+    inet6 fe80::a00:27ff:fed3:b3e5/64 scope link 
+       valid_lft forever preferred_lft forever
+4: dummy1: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/ether 1a:68:67:31:03:62 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.100.1/32 scope global dummy1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::1868:67ff:fe31:362/64 scope link 
+       valid_lft forever preferred_lft forever
+```
+
+Создаю VS:
+```
+dmitry@host1:~$ sudo ipvsadm -A -t 192.168.100.1:80 -s rr
+dmitry@host1:~$ sudo ipvsadm -a -t 192.168.100.1:80 -r 127.0.0.1:8081 -m
+dmitry@host1:~$ sudo ipvsadm -a -t 192.168.100.1:80 -r 127.0.0.1:8082 -m
+dmitry@host1:~$ sudo ipvsadm -ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  192.168.100.1:80 rr
+  -> 127.0.0.1:8081               Masq    1      0          0         
+  -> 127.0.0.1:8082               Masq    1      0          0 
+```
+
+Проверяю балансировку. Должны по очереди возвращаться `:8081` и `:8082`, и счётчики должны увеличиваться равномерно:
+```
+dmitry@host1:~$ curl http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+dmitry@host1:~$ sudo ipvsadm -ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  192.168.100.1:80 rr
+  -> 127.0.0.1:8081               Masq    1      0          0         
+  -> 127.0.0.1:8082               Masq    1      0          1         
+dmitry@host1:~$ curl http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+dmitry@host1:~$ sudo ipvsadm -ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  192.168.100.1:80 rr
+  -> 127.0.0.1:8081               Masq    1      0          1         
+  -> 127.0.0.1:8082               Masq    1      0          1
+dmitry@host1:~$ for i in {0..99}
+> do
+>     curl http://192.168.100.1
+> done
+<h2>*** Response from Backend Server 2 ***</h2>
+<h1>Response from Backend Server 1</h1>
+...
+dmitry@host1:~$ sudo ipvsadm -ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  192.168.100.1:80 rr
+  -> 127.0.0.1:8081               Masq    1      0          51        
+  -> 127.0.0.1:8082               Masq    1      0          51
+```
